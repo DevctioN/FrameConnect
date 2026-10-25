@@ -55,7 +55,10 @@ class AppTests(unittest.TestCase):
     def test_automatic_timer_updates_all_readings_without_clearing_or_overlapping(self):
         started, release = Event(), Event()
         updated = dict(SAMPLE, **READINGS, os_version="SteamOS 3.7-test")
-        updated["batteries"] = [{"name": "battery", "percent": 90, "state": "Charging"}]
+        updated["batteries"] = [{"name": "battery", "percent": 90, "state": "Charging",
+                                 "time_to_full": 2182, "power_watts": 2.376}]
+        updated["controllers"] = [dict(hand="left", connected=True, percent=57),
+                                  dict(hand="right", connected=True, percent=50)]
         updated["storage"] = {"total": 1000 * 1024**3, "used": 410 * 1024**3, "free": 590 * 1024**3}
         updated["temperature"] = {"celsius": 60.0, "sensor": "soc-thermal"}
         updated["memory"] = {"total": 16 * 1024**3, "available": 8 * 1024**3}
@@ -90,6 +93,10 @@ class AppTests(unittest.TestCase):
         self.assertTrue(self.app.connect.isEnabled())
         self.assertEqual(self.app.connect.text(), "Refresh")
         self.assertEqual(self.app.battery_icon.percent, 90)
+        self.assertIn("37 min until full", self.app.battery_detail.text())
+        self.assertIn("2.4 W in", self.app.battery_detail.text())
+        self.assertEqual(self.app.controllers["left"].value.text(), "57%")
+        self.assertEqual(self.app.controllers["right"].value.text(), "50%")
         self.assertEqual(self.app.storage.text(), "590.0 GiB free")
         self.assertEqual(self.app.storage_usage.fraction, .41)
         self.assertEqual(self.app.temperature.text(), "60.0 °C")
@@ -183,6 +190,9 @@ class AppTests(unittest.TestCase):
         self.app.destination.setText("/home/steamos/Videos")
         started, release = Event(), Event()
         updated = dict(SAMPLE, **READINGS)
+        updated["batteries"] = [dict(SAMPLE["batteries"][0], time_to_empty=6598, power_watts=-8.839)]
+        updated["controllers"] = [dict(hand="left", connected=True, percent=57),
+                                  dict(hand="right", connected=True, percent=50)]
         updated["temperature"] = {"celsius": 60.0, "sensor": "soc-thermal"}
         updated["memory"] = {"total": 16 * 1024**3, "available": 8 * 1024**3}
         updated["storage"] = {"total": 1000 * 1024**3, "used": 410 * 1024**3, "free": 590 * 1024**3}
@@ -217,6 +227,9 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(self.app.temperature.text(), "60.0 °C")
                 self.assertEqual(self.app.ram.text(), "8.6 / 17.2 GB")
                 self.assertEqual(self.app.storage.text(), "590.0 GiB free")
+                self.assertIn("1 h 50 min remaining", self.app.battery_detail.text())
+                self.assertIn("8.8 W out", self.app.battery_detail.text())
+                self.assertEqual(self.app.controllers["left"].value.text(), "57%")
                 self.assertEqual(self.app.connection.text(), "Connected to frame")
             finally:
                 release.set()
@@ -472,7 +485,7 @@ class AppTests(unittest.TestCase):
             data = dict(SAMPLE, batteries=[dict(SAMPLE["batteries"][0],
                 percent=percent, state=state, external_power=power)])
             self.app.show_status(parse_status(json.dumps(data)))
-            self.assertEqual(self.app.battery_detail.text(), text)
+            self.assertEqual(self.app.battery_detail.text().splitlines()[0], text)
             self.assertEqual(self.app.battery_icon.charging, charging)
             self.assertIn(text, self.app.battery_icon.toolTip())
             if percent == 75:

@@ -5,12 +5,17 @@ Python, Qt, PySide6, Shiboken and other bundled components retain their own
 licenses. Their notices and complete license texts are in
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) and `licenses/`.
 
+The read-only controller helper references Valve's public OpenVR API; its
+attribution is in `licenses/Valve-OpenVR.txt`. SteamVR's runtime library and
+standalone controller icon files are loaded from the user's headset, rather
+than bundled with Frame Connect.
+
 ## Corresponding library source
 
 The Windows release uses Python 3.15.0 and the unmodified community
 PySide6-Essentials/Shiboken 6.12.0 wheels, including Qt 6.12.0. Frame Connect
 does not modify those libraries. The companion
-`FrameConnect-v0.1.7-ThirdPartySources.zip` release asset contains the complete
+`FrameConnect-v0.1.8-ThirdPartySources.zip` release asset contains the complete
 upstream source archives for the Qt modules shipped with this app:
 
 - `qtbase-everywhere-src-6.12.0.tar.xz`: Qt Core, GUI, Widgets, Network and platform plugins.

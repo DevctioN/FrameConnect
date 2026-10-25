@@ -20,10 +20,10 @@ This application is not affiliated with Valve Corporation.
 - **Code → Download ZIP** or a Git clone provides the Python source, theme,
   launcher/build scripts, dependency files, README, and tests. Set up the Python
   environment using the instructions below to run it.
-- **Releases** provide the Windows x64 download as `FrameConnect-v0.1.7-Windows-x64.zip`.
+- **Releases** provide the Windows x64 download as `FrameConnect-v0.1.8-Windows-x64.zip`.
   Extract it and run `FrameConnect.exe`. Keep the included license notices with
   the app. Python, Qt, the theme, helper scripts and icon are bundled.
-- The companion `FrameConnect-v0.1.7-ThirdPartySources.zip` contains the source
+- The companion `FrameConnect-v0.1.8-ThirdPartySources.zip` contains the source
   of the Qt/PySide6 libraries shipped in that Windows build.
 
 Frame Connect's own code is licensed under the [MIT License](LICENSE).
@@ -39,10 +39,10 @@ source control. These exclusions keep local files on the development PC;
 ## Screenshot
 
 <p align="center">
-  <img src="docs/assets/frame-connect-home.png" alt="Frame Connect v0.1.6 Home screen with headset monitoring and file transfer controls" width="800">
+  <img src="docs/assets/frame-connect-home.png" alt="Frame Connect v0.1.8 Home screen with headset and controller monitoring and file transfer controls" width="800">
 </p>
 
-Frame Connect v0.1.6 connected to a Steam Frame, showing live headset readings.
+Frame Connect v0.1.8 connected to a Steam Frame, showing live headset readings.
 
 ## Run on this PC
 
@@ -91,6 +91,16 @@ Linux gauge value when Steam scales it. The headset dashboard can still round
 or update differently from Steam's API. If that interface is unavailable, the
 app falls back to the raw system percentage; hover over the battery to see
 which source is in use. Nothing is installed or enabled on the headset.
+The battery details include an approximate time until full while charging, or
+remaining use while discharging. Remaining use prefers Steam's own estimate;
+charging time uses the battery driver's `time_to_full_now` reading. Missing or
+invalid estimates show **Time estimate unavailable**. Estimates update with the
+normal refresh and can change with headset load and the charging curve. A
+**Fully charged** battery does not show a time-to-full countdown.
+**Battery power** shows measured net power at the battery: **W in** while taking
+power and **W out** while supplying it. This is calculated from the battery's
+current and voltage, not the charger's advertised power. While plugged in, net
+battery input is different from the headset's total power consumption.
 Before connection, its outline contains a dash; temperature and RAM
 show `— °C` and `— / — GB` so the units are visible without invented readings.
 The storage card has a rounded blue usage bar: its full width represents total
@@ -100,6 +110,16 @@ shown. Free space and used/total capacity remain visible above and below the bar
 A slim OS-version card spans both columns beneath the measurements. It shows
 the headset's reported OS name and version after connecting, or **Unavailable**
 if version information is missing.
+The controller card shows the left and right Steam Frame controllers separately,
+with their official SteamVR status icons, battery percentages, and four small
+green dots under each icon. Each lit dot represents up to 25% charge (rounded
+up); unlit dots are grey. Disconnected controllers show **Not connected**, and a
+missing battery reading shows **Battery unavailable**, with no green dots.
+Readings use SteamVR's public OpenVR background interface on the headset. This
+does not start SteamVR or keep it running. When that interface is unavailable,
+controller status shows **Status unavailable** and other monitoring still works.
+The official icon files are read from the headset's installed SteamVR resources;
+standalone Valve icon files are not bundled with the app.
 After the first successful connection, readings refresh automatically about
 every 5 seconds by default. Use the **Auto-refresh** dropdown in the connection
 card to choose **Never**, **5 seconds**, **10 seconds**, **30 seconds**,
@@ -390,9 +410,11 @@ Hardware testing has confirmed a successful Steam Frame connection with all
 status values populated, and a successful file transfer from a Windows PC to
 the headset. Automatic refresh, offline recovery, stale-response handling, and
 checks starting and completing during transfers are covered by local tests.
-Charging, full-on-external-power labels, and the charging icon are also tested
-locally. Those charger states, the automatic monitoring cadence, offline
-recovery, and headset folders beyond the tested
+Charging estimates, measured battery power, full-on-external-power labels,
+controller roles and missing readings, quarter-capacity dots, and the charging
+icon are also tested locally. Live read-only checks have confirmed battery
+power in both directions and left/right controller percentages and official
+icons. The automatic monitoring cadence, offline recovery, and headset folders beyond the tested
 destination still need hardware verification. Missing battery data is shown as
 **Unavailable**.
 Home/Settings navigation, confirmation and cancellation, power-request errors,
@@ -429,6 +451,7 @@ or change a real headset.
 - `styles.qss`: CSS-like Qt rules for the Steam-inspired interface.
 - `headset.py`: shared SSH options, status validation, and confirmed power requests.
 - `probe.py`: read-only collector executed on the headset.
+- `vr_status.py`: read-only OpenVR controller batteries and runtime status icons.
 - `steam_api.py`: shared standard-library client for Steam's local control interface.
 - `remote_power.py`: separate explicit Steam shutdown request executed on the headset.
 - `folder_picker.py`: remote SteamOS folder chooser.

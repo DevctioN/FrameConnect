@@ -18,11 +18,11 @@ from diagnostics import LOGGER, get_log_directory, get_logging_error, install_qt
 from folder_picker import FolderPicker
 from headset import HeadsetError, HeadsetStatus, fetch_status, power_off_headset
 from preferences import DEFAULT_DESTINATION, DestinationPreferences
-from theme import BatteryIcon, ElidedLabel, StorageUsageBar, TransferProgressBar, UploadIcon, apply_dark_theme
+from theme import BatteryIcon, ControllerStatus, ElidedLabel, StorageUsageBar, TransferProgressBar, UploadIcon, apply_dark_theme
 from transfers import TransferCancelled, upload_files
 
 
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 REFRESH_INTERVALS = (
     ("Never", 0), ("5 seconds", 5000), ("10 seconds", 10000),
     ("30 seconds", 30000), ("1 minute", 60000), ("5 minutes", 300000),
@@ -116,7 +116,8 @@ class FrameConnectApp(QWidget):
         apply_dark_theme(QApplication.instance())
         self.setObjectName("mainWindow")
         self.setWindowTitle("Frame Connect")
-        self.resize(800, 1100)
+        available_height = self.screen().availableGeometry().height() - 80
+        self.resize(800, min(1240, max(680, available_height)))
         self.setMinimumSize(680, 680)
         self.results = Queue()
         self.connected_to = None
@@ -274,6 +275,15 @@ class FrameConnectApp(QWidget):
                 layout.addWidget(self.storage_usage)
             layout.addWidget(description)
             cards.addWidget(card, index // 2, index % 2)
+        self.controllers_card = QFrame()
+        self.controllers_card.setObjectName("card")
+        controller_layout = QHBoxLayout(self.controllers_card)
+        controller_layout.setContentsMargins(20, 14, 20, 14)
+        controller_layout.setSpacing(18)
+        self.controllers = {hand: ControllerStatus(hand) for hand in ("left", "right")}
+        for controller in self.controllers.values():
+            controller_layout.addWidget(controller, 1)
+        cards.addWidget(self.controllers_card, 2, 0, 1, 2)
         self.os_card = QFrame()
         self.os_card.setObjectName("card")
         os_layout = QHBoxLayout(self.os_card)
@@ -284,7 +294,7 @@ class FrameConnectApp(QWidget):
         self.os_version.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.os_version.setAccessibleName("Steam Frame OS version")
         os_layout.addWidget(self.os_version, 1)
-        cards.addWidget(self.os_card, 2, 0, 1, 2)
+        cards.addWidget(self.os_card, 3, 0, 1, 2)
         body_layout.addLayout(cards)
         body_layout.addStretch(1)
 
@@ -651,6 +661,8 @@ class FrameConnectApp(QWidget):
         self._remember_destination()
 
     def _clear_status(self):
+        for controller in self.controllers.values():
+            controller.set_status()
         self.battery.setText("—")
         self.battery.setToolTip("")
         self.battery_icon.set_level(None)
@@ -764,6 +776,8 @@ class FrameConnectApp(QWidget):
         self._schedule_auto_refresh()
 
     def _show_status_error(self, error, *, automatic):
+        for controller in self.controllers.values():
+            controller.set_status(message="Status unavailable")
         self._last_status_error = (error, automatic)
         retrying = bool(self._refresh_interval_ms and self._monitor_connection is not None)
         if automatic:
@@ -802,6 +816,9 @@ class FrameConnectApp(QWidget):
         self._last_checked = f"{datetime.now():%H:%M:%S}"
         self.detail.setText(f"Updated at {self._last_checked}.")
         self.os_version.setText(status.os_version or "Unavailable")
+        readings = {controller.hand: controller for controller in (status.controllers or ())}
+        for hand, widget in self.controllers.items():
+            widget.set_status(readings.get(hand), message="Status unavailable")
         self.battery_icon.set_level(None)
         self.battery.setToolTip("")
         if len(status.batteries) == 1:
@@ -814,7 +831,7 @@ class FrameConnectApp(QWidget):
             )
             self.battery.setToolTip(source)
             self.battery_icon.setToolTip(f"{battery.percent}% · {battery.display_state} · {source}")
-            self.battery_detail.setText(battery.display_state)
+            self.battery_detail.setText(battery.detail)
         elif status.batteries:
             self.battery.setText("Multiple batteries")
             self.battery_detail.setText("\n".join(

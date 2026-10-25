@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from headset import HeadsetError, parse_status
-from probe import collect_status, read_external_power, read_steam_battery
+from probe import collect_status, read_batteries, read_external_power, read_steam_battery
 from test_headset import SAMPLE, fixture_directory
 
 
@@ -99,6 +99,60 @@ def steam_server(reply, *, fragmented=False, bad_handshake=False, oversized=Fals
 
 
 class SteamBatteryTests(unittest.TestCase):
+    def test_timing_and_measured_power_use_driver_units_and_preserve_real_zero(self):
+        with fixture_directory() as root:
+            supply = root / "battery"
+            supply.mkdir()
+            attributes = {"type": "Battery", "capacity": "80", "status": "Charging",
+                          "time_to_full_now": "2182", "time_to_empty_now": "6721",
+                          "current_now": "277500", "voltage_now": "8560780"}
+            for name, value in attributes.items():
+                (supply / name).write_text(value, encoding="utf-8")
+            battery = read_batteries(root)[0]
+            self.assertEqual(battery["time_to_full"], 2182)
+            self.assertEqual(battery["time_to_empty"], 6721)
+            self.assertAlmostEqual(battery["power_watts"], 2.376)
+            for current, expected in (("-1032500", -8.839), ("0", 0), ("unreadable", None)):
+                (supply / "current_now").write_text(current, encoding="utf-8")
+                self.assertEqual(read_batteries(root)[0].get("power_watts"), expected)
+            for value in ("0", "-1", "368634", "4294967295", "unknown"):
+                (supply / "time_to_full_now").write_text(value, encoding="utf-8")
+                self.assertNotIn("time_to_full", read_batteries(root)[0])
+
+    def test_battery_details_show_the_applicable_estimate_and_power_direction(self):
+        for state, percent, full, empty, power, expected, excluded in (
+            ("Charging", 80, 2182, 6721, 2.376, ("37 min until full", "2.4 W in"), "remaining"),
+            ("Discharging", 80, 2182, 6598, -8.839, ("1 h 50 min remaining", "8.8 W out"), "until full"),
+            ("Charging", 100, 2182, 6598, 1.3, ("Fully charged", "1.3 W in"), "until full"),
+            ("Discharging", 80, None, None, None, ("Time estimate unavailable",), "0.0 W"),
+        ):
+            data = dict(SAMPLE, batteries=[dict(SAMPLE["batteries"][0], state=state, percent=percent,
+                external_power=state == "Charging", time_to_full=full, time_to_empty=empty, power_watts=power)])
+            detail = parse_status(json.dumps(data)).batteries[0].detail
+            for text in expected:
+                self.assertIn(text, detail)
+            self.assertNotIn(excluded, detail)
+        for key, value in (("time_to_full", -1), ("time_to_empty", 0), ("time_to_full", True),
+                           ("power_watts", float("nan")), ("power_watts", True), ("power_watts", 201)):
+            data = dict(SAMPLE, batteries=[dict(SAMPLE["batteries"][0], **{key: value})])
+            with self.subTest(key=key, value=value), self.assertRaises(HeadsetError):
+                parse_status(json.dumps(data))
+
+    def test_steam_timer_is_used_only_for_remaining_use(self):
+        for state in ("Charging", "Discharging"):
+            with patch("probe.read_batteries", return_value=[dict(SAMPLE["batteries"][0], state=state,
+                time_to_full=2182, time_to_empty=6721)]), patch("probe.read_steam_battery", return_value={
+                    "percent": 80, "source": "steam", "time_to_empty": 6598,
+                }):
+                battery = parse_status(json.dumps(collect_status())).batteries[0]
+            self.assertEqual(battery.time_to_empty, 6598 if state == "Discharging" else 6721)
+            self.assertEqual(battery.time_to_full, 2182)
+
+    def test_unknown_steam_timer_does_not_discard_the_percentage(self):
+        for seconds in (None, 0, -1, True, "3600", 368634, 4294967295):
+            with patch("probe.query_steam", return_value={"level": .8, "seconds": seconds}):
+                self.assertEqual(read_steam_battery(), {"percent": 80, "source": "steam"})
+
     def test_charger_presence_uses_system_inputs_including_programmable_usb_power(self):
         with fixture_directory() as root:
             for name, attributes in {
@@ -143,7 +197,7 @@ class SteamBatteryTests(unittest.TestCase):
 
     def test_collector_combines_steam_percentage_with_independent_charger_presence(self):
         with patch("probe.read_batteries", return_value=[dict(SAMPLE["batteries"][0])]), patch(
-            "probe.read_steam_battery", return_value=100
+            "probe.read_steam_battery", return_value={"percent": 100, "source": "steam"}
         ), patch("probe.read_external_power", return_value=True):
             battery = parse_status(json.dumps(collect_status())).batteries[0]
         self.assertEqual(battery.percent, 100)
@@ -154,18 +208,18 @@ class SteamBatteryTests(unittest.TestCase):
 
     def test_reports_steam_percentage_including_zero_and_rounds_without_offset(self):
         for level, percent in ((0, 0), (.934, 93), (.995, 100), (1, 100)):
-            with self.subTest(level=level), steam_server({"id": 1, "result": {"result": {"value": level}}}) as requests:
-                self.assertEqual(read_steam_battery(), percent)
+            with self.subTest(level=level), steam_server({"id": 1, "result": {"result": {"value": {"level": level, "seconds": 6598}}}}) as requests:
+                self.assertEqual(read_steam_battery(), {"percent": percent, "source": "steam", "time_to_empty": 6598})
                 self.assertEqual(requests[0]["method"], "Runtime.evaluate")
                 self.assertTrue(requests[0]["params"]["awaitPromise"])
 
     def test_fragmented_response_and_ping_are_supported(self):
-        with steam_server({"id": 1, "result": {"result": {"value": .99}}}, fragmented=True):
-            self.assertEqual(read_steam_battery(), 99)
+        with steam_server({"id": 1, "result": {"result": {"value": {"level": .99}}}}, fragmented=True):
+            self.assertEqual(read_steam_battery(), {"percent": 99, "source": "steam"})
 
     def test_invalid_or_unavailable_steam_values_fall_back(self):
         for value in (None, True, "99", -1, 1.01, float("nan"), float("inf"), {}):
-            with self.subTest(value=value), steam_server({"id": 1, "result": {"result": {"value": value}}}):
+            with self.subTest(value=value), steam_server({"id": 1, "result": {"result": {"value": {"level": value}}}}):
                 self.assertIsNone(read_steam_battery())
         with steam_server({"id": 1, "error": {"message": "Steam is restarting"}}):
             self.assertIsNone(read_steam_battery())
@@ -190,7 +244,7 @@ class SteamBatteryTests(unittest.TestCase):
         for percent in (99, 0, None):
             with self.subTest(percent=percent), patch("probe.read_batteries", return_value=[
                 {"name": "max1720x", "percent": 93, "state": "Discharging"}
-            ]), patch("probe.read_steam_battery", return_value=percent):
+            ]), patch("probe.read_steam_battery", return_value=None if percent is None else {"percent": percent, "source": "steam"}):
                 status = parse_status(json.dumps(collect_status()))
                 self.assertEqual(status.batteries[0].percent, 93 if percent is None else percent)
                 self.assertEqual(status.batteries[0].source, "system" if percent is None else "steam")

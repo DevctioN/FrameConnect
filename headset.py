@@ -1,8 +1,11 @@
 """SSH transport and validation, separate from the desktop interface."""
 
 from dataclasses import dataclass
+import base64
+import binascii
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +24,9 @@ class Battery:
     state: str
     source: str = "system"
     external_power: bool | None = None
+    time_to_full: int | None = None
+    time_to_empty: int | None = None
+    power_watts: float | None = None
 
     @property
     def display_state(self) -> str:
@@ -31,6 +37,31 @@ class Battery:
         if self.external_power is True and self.state in ("Discharging", "Not charging", "Unknown"):
             return "Plugged in · Not charging"
         return self.state
+
+    @property
+    def detail(self) -> str:
+        state = self.display_state
+        seconds = self.time_to_full if state == "Charging" else self.time_to_empty if state == "Discharging" else None
+        lines = [state]
+        if seconds is not None:
+            minutes = math.ceil(seconds / 60)
+            hours, minutes = divmod(minutes, 60)
+            duration = f"{hours} h" + (f" {minutes} min" if minutes else "") if hours else f"{minutes} min"
+            lines.append(f"About {duration} " + ("until full" if state == "Charging" else "remaining"))
+        elif state in ("Charging", "Discharging"):
+            lines.append("Time estimate unavailable")
+        if self.power_watts is not None:
+            direction = "in" if self.power_watts > 0 else "out" if self.power_watts < 0 else ""
+            lines.append(f"Battery power: {abs(self.power_watts):.1f} W {direction}".rstrip())
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Controller:
+    hand: str
+    connected: bool
+    percent: int | None
+    icon: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +91,7 @@ class HeadsetStatus:
     temperature: Temperature | None = None
     memory: Memory | None = None
     os_version: str | None = None
+    controllers: tuple[Controller, ...] | None = None
 
 
 def parse_status(output: str) -> HeadsetStatus:
@@ -91,7 +123,13 @@ def parse_status(output: str) -> HeadsetStatus:
             external_power = item.get("external_power")
             if external_power is not None and type(external_power) is not bool:
                 raise ValueError("Invalid external power state")
-            batteries.append(Battery(name, percent, state, source, external_power))
+            times = [item.get(key) for key in ("time_to_full", "time_to_empty")]
+            if any(value is not None and (type(value) is not int or not 0 < value <= 604800) for value in times):
+                raise ValueError("Invalid battery time estimate")
+            watts = item.get("power_watts")
+            if watts is not None and (type(watts) not in (int, float) or not math.isfinite(watts) or abs(watts) > 200):
+                raise ValueError("Invalid battery power")
+            batteries.append(Battery(name, percent, state, source, external_power, *times, watts))
         downloads = data.get("downloads", "~/Downloads")
         if not isinstance(downloads, str) or not downloads.strip():
             raise ValueError("Invalid Downloads folder")
@@ -116,8 +154,30 @@ def parse_status(output: str) -> HeadsetStatus:
         os_version = data.get("os_version")
         if os_version is not None and (not isinstance(os_version, str) or not os_version.strip()):
             raise ValueError("Invalid OS version")
-        return HeadsetStatus(hostname, tuple(batteries), total, used, free, downloads, temperature, memory, os_version)
-    except (ValueError, TypeError, KeyError) as error:
+        controllers = None
+        if data.get("controllers") is not None:
+            if not isinstance(data["controllers"], list) or len(data["controllers"]) > 2:
+                raise ValueError("Invalid controllers")
+            controllers = []
+            for item in data["controllers"]:
+                hand, connected, percent = item["hand"], item["connected"], item.get("percent")
+                if hand not in ("left", "right") or any(reading.hand == hand for reading in controllers):
+                    raise ValueError("Invalid controller hand")
+                if type(connected) is not bool or (percent is not None and (
+                    type(percent) is not int or not 0 <= percent <= 100 or not connected
+                )):
+                    raise ValueError("Invalid controller battery")
+                icon = item.get("icon")
+                if icon is not None:
+                    if not isinstance(icon, str) or len(icon) > 90000:
+                        raise ValueError("Invalid controller icon")
+                    icon = base64.b64decode(icon, validate=True)
+                    if len(icon) > 65536 or not icon.startswith(b"\x89PNG\r\n\x1a\n"):
+                        raise ValueError("Invalid controller icon")
+                controllers.append(Controller(hand, connected, percent, icon))
+            controllers = tuple(controllers)
+        return HeadsetStatus(hostname, tuple(batteries), total, used, free, downloads, temperature, memory, os_version, controllers)
+    except (ValueError, TypeError, KeyError, binascii.Error) as error:
         raise HeadsetError("The headset returned an unreadable status response.") from error
 
 
@@ -176,17 +236,16 @@ def ssh_error(detail: str) -> HeadsetError:
 
 
 def remote_script_source(filename: str) -> str:
-    """Load the shared Steam helper in memory on the headset, then run a script."""
+    """Load read-only helpers in memory on the headset, then run a script."""
     root = Path(__file__).resolve().parent
-    helper = (root / "steam_api.py").read_text(encoding="utf-8")
     source = (root / filename).read_text(encoding="utf-8")
-    return (
-        "import sys, types\n"
-        "_frame_steam = types.ModuleType('steam_api')\n"
-        f"exec({helper!r}, _frame_steam.__dict__)\n"
-        "sys.modules['steam_api'] = _frame_steam\n"
-        f"exec({source!r}, {{'__name__': '__main__'}})\n"
-    )
+    bootstrap = "import sys, types\n"
+    for name in (("steam_api", "vr_status") if filename == "probe.py" else ("steam_api",)):
+        helper = (root / (name + ".py")).read_text(encoding="utf-8")
+        bootstrap += (f"_frame_helper = types.ModuleType({name!r})\n"
+                      f"exec({helper!r}, _frame_helper.__dict__)\n"
+                      f"sys.modules[{name!r}] = _frame_helper\n")
+    return bootstrap + f"exec({source!r}, {{'__name__': '__main__'}})\n"
 
 
 def fetch_status(host: str, user: str = "steamos", key_file: str = "") -> HeadsetStatus:

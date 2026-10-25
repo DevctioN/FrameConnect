@@ -12,6 +12,7 @@ import socket
 import subprocess
 
 from steam_api import query_steam
+from vr_status import read_controllers
 
 
 # Steam scales the physical battery gauge. Ask its battery API for the same
@@ -31,19 +32,27 @@ STEAM_BATTERY_QUERY = """new Promise((resolve) => {
     const timer = setTimeout(() => finish(null), 750);
     try {
         subscription = SteamClient.System.RegisterForBatteryStateChanges((state) => {
-            finish(state.bHasBattery ? state.flLevel : null);
+            finish(state.bHasBattery ? {level: state.flLevel, seconds: state.nSecondsRemaining} : null);
         });
         if (complete) dispose();
     } catch (_) { finish(null); }
 })"""
 
 
-def read_steam_battery() -> int | None:
-    """Prefer Steam's displayed estimate, preserving the system fallback."""
-    level = query_steam(STEAM_BATTERY_QUERY)
-    if type(level) in (int, float) and math.isfinite(level) and 0 <= level <= 1:
-        return int(level * 100 + .5)
-    return None
+def read_steam_battery() -> dict | None:
+    """Steam's displayed percentage and its estimate of remaining use."""
+    value = query_steam(STEAM_BATTERY_QUERY)
+    if not isinstance(value, dict):
+        return None
+    level = value.get("level")
+    if type(level) not in (int, float) or not math.isfinite(level) or not 0 <= level <= 1:
+        return None
+    result = {"percent": int(level * 100 + .5), "source": "steam"}
+    seconds = value.get("seconds")
+    # The Frame's gauge exposes a saturated 0xffff time register as 368634 s.
+    if type(seconds) is int and 0 < seconds <= 604800 and seconds != 368634:
+        result["time_to_empty"] = seconds
+    return result
 
 
 def downloads_directory() -> str:
@@ -87,11 +96,27 @@ def read_batteries(root: Path = Path("/sys/class/power_supply")) -> list[dict]:
         except ValueError:
             continue
         if 0 <= percent <= 100:
-            batteries.append({
+            reading = {
                 "name": supply.name,
                 "percent": percent,
                 "state": read_attribute(supply / "status") or "Unknown",
-            })
+            }
+            for attribute, key in (("time_to_full_now", "time_to_full"), ("time_to_empty_now", "time_to_empty")):
+                try:
+                    seconds = int(read_attribute(supply / attribute) or "")
+                    if 0 < seconds <= 604800 and seconds != 368634:
+                        reading[key] = seconds
+                except ValueError:
+                    pass
+            try:
+                current = int(read_attribute(supply / "current_now") or "")
+                voltage = int(read_attribute(supply / "voltage_now") or "")
+                watts = current * voltage / 1e12
+                if voltage > 0 and math.isfinite(watts) and abs(watts) <= 200:
+                    reading["power_watts"] = round(watts, 3)
+            except ValueError:
+                pass
+            batteries.append(reading)
     return batteries
 
 
@@ -178,9 +203,12 @@ def collect_status() -> dict:
     usage = shutil.disk_usage(Path.home())
     batteries = read_batteries()
     if len(batteries) == 1:
-        percent = read_steam_battery()
-        if percent is not None:
-            batteries[0].update(percent=percent, source="steam")
+        steam = read_steam_battery()
+        if steam is not None:
+            # Steam's timer describes remaining use, never time to full.
+            if batteries[0]["state"] != "Discharging":
+                steam.pop("time_to_empty", None)
+            batteries[0].update(steam)
     external_power = read_external_power()
     if external_power is not None:
         for battery in batteries:
@@ -193,6 +221,7 @@ def collect_status() -> dict:
         "temperature": read_temperature(),
         "memory": read_memory(),
         "os_version": read_os_version(),
+        "controllers": read_controllers(),
     }
 
 

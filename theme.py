@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen
-from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy, QWidget
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 COLORS = {
@@ -82,6 +82,79 @@ class BatteryIcon(QWidget):
                                 Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             painter.setBrush(QColor(COLORS["input"]))
             painter.drawPath(bolt)
+
+
+class ControllerDots(QWidget):
+    """Four quarter-capacity indicators underneath the official controller icon."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(64, 10)
+        self.set_level(None)
+
+    def set_level(self, percent):
+        self.filled = (percent + 24) // 25 if percent is not None else 0
+        self.setAccessibleName("Controller battery level")
+        self.setAccessibleDescription("Battery unavailable" if percent is None else f"{self.filled} of 4 battery dots · {percent}%")
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for index in range(4):
+            painter.setBrush(QColor("#78c78e" if index < self.filled else COLORS["border"]))
+            painter.drawEllipse(QPointF(14 + index * 12, 5), 3, 3)
+
+
+class ControllerStatus(QWidget):
+    def __init__(self, hand, parent=None):
+        super().__init__(parent)
+        self.hand = hand
+        self.icon_data = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        picture = QVBoxLayout()
+        picture.setSpacing(4)
+        self.icon = QLabel("—")
+        self.icon.setFixedSize(64, 64)
+        self.icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon.setAccessibleName(f"Official {hand} Steam Frame controller icon")
+        picture.addWidget(self.icon)
+        self.dots = ControllerDots()
+        picture.addWidget(self.dots)
+        layout.addLayout(picture)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        title = QLabel(f"{hand.upper()} CONTROLLER")
+        title.setObjectName("eyebrow")
+        text.addWidget(title)
+        self.value = QLabel("—")
+        self.value.setObjectName("metricValue")
+        text.addWidget(self.value)
+        self.detail = QLabel()
+        self.detail.setProperty("muted", True)
+        text.addWidget(self.detail)
+        layout.addLayout(text, 1)
+        self.set_status()
+
+    def set_status(self, reading=None, *, message="Waiting for the headset"):
+        connected = reading is not None and reading.connected
+        percent = reading.percent if connected else None
+        self.value.setText(f"{percent}%" if percent is not None else "—")
+        self.detail.setText(("Connected" if percent is not None else "Battery unavailable") if connected
+                            else "Not connected" if reading is not None else message)
+        self.dots.set_level(percent)
+        data = reading.icon if reading is not None else None
+        if data != self.icon_data:
+            self.icon_data = data
+            pixmap = QPixmap()
+            if data and pixmap.loadFromData(data, "PNG"):
+                self.icon.setPixmap(pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                                 Qt.TransformationMode.SmoothTransformation))
+            else:
+                self.icon.setText("—")
 
 
 class UploadIcon(QWidget):

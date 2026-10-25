@@ -45,7 +45,7 @@ def main() -> None:
         "--workpath", str(root / "build" / "pyinstaller"),
         "--specpath", str(root / "build"),
     ]
-    for filename in ("styles.qss", "probe.py", "remote_files.py", "steam_api.py", "remote_power.py"):
+    for filename in ("styles.qss", "probe.py", "vr_status.py", "remote_files.py", "steam_api.py", "remote_power.py"):
         options.extend(("--add-data", f"{root / filename}:."))
     for filename in ("LICENSE", "THIRD_PARTY_NOTICES.txt", "SOURCES.md", "licenses"):
         if not (root / filename).exists():
